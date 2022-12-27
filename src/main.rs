@@ -1,13 +1,14 @@
 use std::env;
 use std::str::FromStr;
 
-use bitcoincore_rpc::{Client, RpcApi};
-use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::bitcoin::hashes::hex::{FromHex, ToHex};
+use bitcoincore_rpc::bitcoin::BlockHash;
+use bitcoincore_rpc::{Client, RpcApi};
 use chrono::Utc;
+use log::{debug, error, info};
 use num_format::{Locale, ToFormattedString};
-use secp256k1::{KeyPair, Message, schnorr, Secp256k1, SecretKey, XOnlyPublicKey};
 use secp256k1::hashes::sha256;
+use secp256k1::{schnorr, KeyPair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
 use serde::Serialize;
 use serde_json::json;
 use websocket::ClientBuilder;
@@ -31,7 +32,7 @@ impl Event {
         let keypair = KeyPair::from_secret_key(&secp, secret_key);
         let pubkey = keypair.x_only_public_key().0;
         let serialized_event = json!([0, pubkey, created_at, kind, json!(tags), content]);
-        println!("{}", serialized_event);
+        debug!("{}", serialized_event);
         let msg =
             Message::from_hashed_data::<sha256::Hash>(serialized_event.to_string().as_bytes());
         let id = msg.to_string();
@@ -66,11 +67,11 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
             env::var("RPC_PASSWORD").unwrap(),
         ),
     )
-        .expect("Could not create RPC client");
-    println!("Looking at block hash: {}", blockhash);
+    .expect("Could not create RPC client");
+    info!("Looking at block hash: {}", blockhash);
     let block = rpc.get_block(&blockhash).unwrap();
     let height = block.bip34_block_height().unwrap();
-    println!("Got data for block at height {}", height);
+    info!("Got data for block at height {}", height);
     let total: u64 = block
         .txdata
         .iter()
@@ -103,7 +104,7 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
 
     let total_usd = btc_transferred * price;
 
-    println!(
+    info!(
         "total transferred (excluding coinbase): {} bitcoin or ${:.2}",
         btc_transferred, total_usd
     );
@@ -120,6 +121,7 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
 }
 
 fn main() {
+    env_logger::init();
     let ctx = zmq::Context::new();
     let socket = ctx.socket(SUB).expect("Couldn't create zmq socket");
     socket
@@ -129,15 +131,15 @@ fn main() {
 
     let secret_key = SecretKey::from_str(&env::var("NOSTR_PRIVKEY").unwrap()).unwrap();
 
-    println!("Starting listen loop");
+    info!("Starting listen loop");
     loop {
         let message = socket
             .recv_multipart(0)
             .expect("Could not receive multipart message");
         let topic = std::str::from_utf8(message.first().unwrap()).unwrap();
-        println!("Got a message with topic {}", topic);
+        debug!("Got a message with topic {}", topic);
         if topic == "hashblock" {
-            println!("Got a new hashblock!");
+            debug!("Got a new hashblock!");
             let blockhash = BlockHash::from_hex(&message[1].to_hex()).unwrap();
             let report = get_value_report_for_block(&blockhash);
             let msg = format!("Block {} was just confirmed. The total value of all the non-coinbase outputs was {} sats, or ${}",
@@ -146,10 +148,10 @@ fn main() {
                               (report.usd_transferred as u64).to_formatted_string(&Locale::en));
             let event = Event::new(&secret_key, 1, Vec::new(), msg);
             let event_json = json!(event).to_string();
-            println!("{}", event_json);
+            debug!("{}", event_json);
 
             let event_msg = json!(["EVENT", event]).to_string();
-            println!("{}", event_msg);
+            debug!("{}", event_msg);
             let message = websocket::Message::text(event_msg);
             for relay in vec![
                 "wss://relay.damus.io",
@@ -159,9 +161,10 @@ fn main() {
                 "wss://nostr-pub.semisol.dev",
                 "wss://nostr.oxtr.dev",
             ] {
-                if let Err(e) = publish_to_relay(relay, &message) {
-                    println!("{}", e);
-                }
+                match publish_to_relay(relay, &message) {
+                    Ok(_) => info!("sent message to {}", relay),
+                    Err(e) => error!("{}", e),
+                };
             }
         }
     }
@@ -175,6 +178,5 @@ fn publish_to_relay(relay: &str, message: &websocket::Message) -> Result<(), Str
     client
         .send_message(message)
         .map_err(|err| format!("could not send message to relay: {}", err.to_string()))?;
-    println!("sent message to {}", relay);
     Ok(())
 }
