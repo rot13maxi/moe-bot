@@ -166,7 +166,7 @@ fn main() {
             debug!("Got a new hashblock!");
             let blockhash = BlockHash::from_hex(&message[1].to_hex()).unwrap();
             let report = get_value_report_for_block(&blockhash);
-            let msg = format!("Block {} was just confirmed. The total value of all the non-coinbase outputs was {} sats, or ${} and {} sats in fees (${}) were paid",
+            let msg = format!("Block {} was just confirmed. The total value of all the non-coinbase outputs was {} sats (${}) for {} sats (${}) in fees",
                               report.block_height,
                               report.sats_transferred.to_formatted_string(&Locale::en),
                               (report.usd_transferred as u64).to_formatted_string(&Locale::en),
@@ -182,10 +182,10 @@ fn main() {
             for relay in vec![
                 "wss://relay.damus.io",
                 "wss://nostr.fmt.wiz.biz",
-                "wss://relay.nos.lol",
-                "wss://nostr.current.fyi",
-                "wss://nostr.snort.social",
                 "wss://nostr.oxtr.dev",
+                "wss://relay.austrich.net",
+                "wss://nos.lol",
+                "wss://nostr.bitcoiner.social",
             ] {
                 match publish_to_relay(relay, &message) {
                     Ok(_) => info!("sent message to {}", relay),
