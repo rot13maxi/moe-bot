@@ -2,7 +2,7 @@ use std::env;
 use std::str::FromStr;
 
 use bitcoincore_rpc::bitcoin::hashes::hex::{FromHex, ToHex};
-use bitcoincore_rpc::bitcoin::BlockHash;
+use bitcoincore_rpc::bitcoin::{BlockHash, Transaction};
 use bitcoincore_rpc::{Client, RpcApi};
 use chrono::Utc;
 use log::{debug, error, info};
@@ -13,6 +13,9 @@ use serde::Serialize;
 use serde_json::json;
 use websocket::ClientBuilder;
 use zmq::SUB;
+
+const COIN: u64 = 100_000_000;
+const COIN_F: f64 = 100_000_000.0;
 
 #[derive(Serialize)]
 struct Event {
@@ -57,6 +60,17 @@ struct Report {
     block_height: u64,
     block_hash: String,
     exchange_rate: f64,
+    fees: u64,
+    fees_usd: f64,
+}
+
+fn get_subsidy(height: u64) -> u64 {
+    let epoch = height / 210000;
+    if epoch > 32 {
+        0
+    } else {
+        (50 * COIN) >> epoch
+    }
 }
 
 fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
@@ -72,8 +86,8 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
     let block = rpc.get_block(&blockhash).unwrap();
     let height = block.bip34_block_height().unwrap();
     info!("Got data for block at height {}", height);
-    let total: u64 = block
-        .txdata
+    let (coinbase, normal_tx): (Vec<&Transaction>, Vec<&Transaction>) = block.txdata.iter().partition(|tx|tx.is_coin_base());
+    let total: u64 = normal_tx
         .iter()
         .filter(|tx| !tx.is_coin_base())
         .map(|tx| {
@@ -83,6 +97,10 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
                 .fold(0u64, |acc, x| acc + x)
         })
         .fold(0u64, |acc, x| acc + x);
+    let fees = coinbase.first().unwrap().output
+        .iter()
+        .map(|output| output.value)
+        .fold(0u64, |acc, x| acc + x) - get_subsidy(height);
 
     let http = reqwest::blocking::Client::new();
     let price_quote: serde_json::Value = http
@@ -100,9 +118,13 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
         .as_f64()
         .unwrap();
 
-    let btc_transferred = total as f64 / 100_000_000.0;
+    let btc_transferred = total as f64 / COIN_F;
 
     let total_usd = btc_transferred * price;
+
+    let btc_fees = fees as f64 / COIN_F;
+
+    let fees_usd = btc_fees * price;
 
     info!(
         "total transferred (excluding coinbase): {} bitcoin or ${:.2}",
@@ -115,6 +137,8 @@ fn get_value_report_for_block(blockhash: &BlockHash) -> Report {
         block_height: height,
         sats_transferred: total,
         usd_transferred: f64::trunc(total_usd * 100.0) / 100.0,
+        fees,
+        fees_usd: f64::trunc(fees_usd * 100.0) / 100.0,
     };
 
     return report;
@@ -142,10 +166,12 @@ fn main() {
             debug!("Got a new hashblock!");
             let blockhash = BlockHash::from_hex(&message[1].to_hex()).unwrap();
             let report = get_value_report_for_block(&blockhash);
-            let msg = format!("Block {} was just confirmed. The total value of all the non-coinbase outputs was {} sats, or ${}",
+            let msg = format!("Block {} was just confirmed. The total value of all the non-coinbase outputs was {} sats, or ${} and {} sats in fees (${}) were paid",
                               report.block_height,
                               report.sats_transferred.to_formatted_string(&Locale::en),
-                              (report.usd_transferred as u64).to_formatted_string(&Locale::en));
+                              (report.usd_transferred as u64).to_formatted_string(&Locale::en),
+                              (report.fees).to_formatted_string(&Locale::en),
+                              (report.fees_usd as u64).to_formatted_string(&Locale::en));
             let event = Event::new(&secret_key, 1, Vec::new(), msg);
             let event_json = json!(event).to_string();
             debug!("{}", event_json);
@@ -179,4 +205,16 @@ fn publish_to_relay(relay: &str, message: &websocket::Message) -> Result<(), Str
         .send_message(message)
         .map_err(|err| format!("could not send message to relay: {}", err.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{COIN, COIN_F, get_subsidy};
+
+    #[test]
+    fn subsidy_calculation_works() {
+        assert_eq!(get_subsidy(1), 50*COIN);
+        assert_eq!(get_subsidy(210_000 * 1), 25*COIN);
+        assert_eq!(get_subsidy(210_000 * 3), (6.25*COIN_F) as u64);
+    }
 }
