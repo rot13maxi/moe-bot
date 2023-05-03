@@ -181,10 +181,10 @@ fn main() {
             let message = websocket::Message::text(event_msg);
             for relay in vec![
                 "wss://relay.damus.io",
-                "wss://nostr.zebedee.cloud",
-                "wss://relay.nostr.ch",
-                "wss://nostr-pub.wellorder.net",
-                "wss://nostr-pub.semisol.dev",
+                "wss://nostr.fmt.wiz.biz",
+                "wss://relay.nos.lol",
+                "wss://nostr.current.fyi",
+                "wss://nostr.snort.social",
                 "wss://nostr.oxtr.dev",
             ] {
                 match publish_to_relay(relay, &message) {
